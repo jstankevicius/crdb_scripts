@@ -1,0 +1,29 @@
+# Name of the folder into which processed YAML files are thrown
+name: test_experiment
+
+# This will assume that if there are 4 nodes, they will be named node-0 ... node-3.
+nodes: 4 
+
+# Default workload settings. These are changed by the per-workload settings, if at all.
+# They otherwise stay constant throughout the entire experiment.
+defaults: {
+  duration: 2m,
+  display-every: 30s,
+  splits: 24,
+  tolerate-errors: false,
+  drop: true,
+  max-rate: 10000,
+  concurrency: 20000,
+}
+
+# Per-workload settings:
+configs: [
+  {max-rate: 20000},
+  {max-rate: 40000},
+  {max-rate: 60000},
+  {max-rate: 80000},
+  {max-rate: 100000},
+  {max-rate: 120000},
+  {max-rate: 140000},
+  {max-rate: 180000}
+]

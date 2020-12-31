@@ -1,5 +1,5 @@
 sudo usermod -aG docker $USER
-sudo apt-get install python3-pip
+sudo apt-get install -y python3-pip
 pip3 install -r requirements.txt
 cd ~
 mkdir go

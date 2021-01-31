@@ -165,10 +165,7 @@ def start_cluster(n_nodes):
         ssh_cmd("node-" + str(i), cmd)
     
     ssh_cmd("node-0", "cockroach init --insecure --host=node-0:26257")
-
-    # Set rate limit
-    #ssh_cmd("node-0", "cockroach sql --insecure --host=node-0:26257 --execute 'SET CLUSTER SETTING sql.rate_limiter.limit=65000'")
-    #ssh_cmd("node-0", "cockroach sql --insecure --host=node-0:26257 --execute 'SET CLUSTER SETTING sql.rate_limiter.application_name=kv'")
+    #ssh_cmd("node-0", "cockroach sql --insecure --host=node-0:26257 --execute 'SET CLUSTER SETTING grpc_server.admission_concurrency=10'")
     time.sleep(2)
 
 def kill_cluster(n_nodes):
@@ -198,7 +195,7 @@ def main():
         os.system("mkdir -p " + name + "/traces")
 
         for workload_config in configs:
-            cmd = "./cockroach workload run kv "
+            cmd = "cockroach workload run kv "
             flags = defaults
 
             start_cluster(n_nodes)

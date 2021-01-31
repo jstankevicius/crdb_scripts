@@ -28,6 +28,3 @@ def kill_cluster(n_nodes):
         ssh_cmd(node_name, "pkill -9 cockroach")
         ssh_cmd(node_name, "pkill -9 cockroach")
         ssh_cmd(node_name, "sudo rm -r /mnt/sda4/node")
-
-
-kill_cluster(4)

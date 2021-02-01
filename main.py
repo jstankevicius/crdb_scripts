@@ -2,131 +2,140 @@ import yaml
 import os
 import numpy as np
 import time
-import queue
 import numpy as np
+from pqueue import PriorityQueue
 from tqdm import tqdm
 
 def list_stoi(l):
     return [int(s) for s in l]
 
-def trim(lines, ignore_start=0, ignore_end=120):
-    print("Trimming with parameters", ignore_start, ignore_end)
-    print("Trace starts", len(lines), "lines long")
+# We shouldn't even need to do this. 
+def trim(timestamps, ignore_start=0, ignore_end=120):
+    print("trimming with parameters", ignore_start, ignore_end)
+    print("trace starts", len(timestamps), "lines long")
 
-    # 'lines' is a sorted list of strings where reach string is a pair of timestamps,
-    # one for when the request started and one for when the request ended. 
-    timestamp_ints = np.array([list_stoi(line.split()) for line in lines])
     start_timestamp_index = 0
     end_timestamp_index = 0
+    experiment_start = timestamps[0][0]
 
-    experiment_start = timestamp_ints[0][0]
-    experiment_end = timestamp_ints[-1][1]
-
-    for i in range(0, len(lines)):
-        if (timestamp_ints[i][0] - experiment_start)/(10**9) > ignore_start:
+    for i in range(0, len(timestamps)):
+        if (timestamps[i][0] - experiment_start)/(10**9) > ignore_start:
             start_timestamp_index = i
             break
 
-    for i in range(0, len(lines)):
-        if (timestamp_ints[i][0] - experiment_start)/(10**9) > ignore_end:
+    for i in range(len(timestamps) - 1, 0, -1):
+        if (timestamps[i][1] - experiment_start)/(10**9) >= ignore_end:
             end_timestamp_index = i
             break
 
-    lines = lines[start_timestamp_index:end_timestamp_index]
-    print("Trace ends", len(lines), "lines long")
-    return lines
+    timestamps = timestamps[start_timestamp_index:end_timestamp_index]
+    print("trace ends", len(timestamps), "lines long")
+    return timestamps
 
-def process_timeseries(timestamps):
-
-    # TODO: throughput should probably be a trailing window.
-    timestamps = np.array([list_stoi(ts.split()) for ts in timestamps])
+def process_timeseries(timestamps, duration):
 
     # Constants:
     N_REQUESTS = len(timestamps)
     START_NANO = timestamps[0][0]
     STEP_NANO = 10**8 # The length of the step window in nanoseconds.
 
-    # cur_window is the current maximum start timestamp we will consider before deciding that
-    # we should move on to the next interval.
-    cur_window = START_NANO + STEP_NANO
+    # Figure out how many windows we're going to collect data for:
+    # (we add 1 because this is including the "fake" window that ends at t=0)
+    N_WINDOWS = int(duration*(10**9)/STEP_NANO) + 1
 
-    # Outstanding request timeseries data:
-    outstanding      = []
+    # window_timestamp is the current maximum start timestamp we will consider 
+    # before deciding that we should move on to the next window.
+    window_timestamp = START_NANO + STEP_NANO
+    # Index of the "right side" of the current window.
+    window_idx       = 1
 
-    # Load timeseries data:
-    provided_load    = []
+    # Because latency is measured for every request, we cannot just measure
+    # "total latency" for a single window. We're instead going to collect
+    # latencies for all requests that finish inside a window and then take
+    # percentiles.
+    latencies        = []
+    total_latencies  = [] # latencies of EVERY request
 
-    # Latency timeseries data:
-    # Internally, if we're calling  numpy.percentile() on a list, numpy will take it and convert
-    # it into a numpy array, which takes a bit of time. It's easier to just fill in values.
-    latencies        = np.zeros(shape=(N_REQUESTS,))
-    p99_latency      = []
-    p90_latency      = []
-    p50_latency      = []
+    # Timeseries data:
+    outstanding      = np.zeros(shape=(N_WINDOWS,))
+    throughput       = np.zeros(shape=(N_WINDOWS,))
+    p99_latency      = np.zeros(shape=(N_WINDOWS,))
+    p90_latency      = np.zeros(shape=(N_WINDOWS,))
+    p50_latency      = np.zeros(shape=(N_WINDOWS,))
 
     # Number of requests finished in the current window:
     total_finished   = 0
     
-    # Used to store all requests we consider to be outstanding at a given point in time.
-    cur_outstanding  = queue.PriorityQueue()
-
-    # Index of the last request that caused the window to increase.
-    last_window_increase = 0
+    # Used to store all requests we consider to be outstanding at a given point 
+    # in time.
+    cur_outstanding  = PriorityQueue()
 
     for i in tqdm(range(N_REQUESTS)):
 
         start = timestamps[i][0]
         finish = timestamps[i][1]
-        latencies[i] = (finish - start)/(10**6) # convert to ms
+        latency = (finish - start)/(10**6)
+        total_latencies.append(latency)
 
-        # Check the request's start time. Is it outside our current window? If yes, then we should
-        # collect all data about this interval and increment the window.
-        if start > cur_window:
+        # Check the request's start time. Is it outside our current window? If 
+        # yes, then we should collect all data about this interval and increment 
+        # the window.
+        if start > window_timestamp:
 			
-            # This is awful. I wish there were some way to view the head of the priority queue.
-            # Maybe write a custom class?
-            try:
-                request = cur_outstanding.get(block=False)
-                while request < cur_window:
+            if cur_outstanding.head() is not None:
+                while cur_outstanding.head() < window_timestamp:
                     total_finished += 1
-                    request = cur_outstanding.get(block=False)
-            except queue.Empty:
-                pass
+                    cur_outstanding.pop()
+                    if cur_outstanding.empty():
+                        break
 
-            outstanding.append(cur_outstanding.qsize())
-            provided_load.append(total_finished/0.1)
+            # Register stats about this window:
+            outstanding[window_idx] = cur_outstanding.size()
+            throughput[window_idx] = total_finished/0.1
             
             # Reset counter for the next window:
             total_finished = 0
+            if len(latencies) == 0:
+                latencies = [0]
 
-            # Compute latency percentiles for this window:        
-            p99_latency.append(np.percentile(latencies[last_window_increase:i], 99))
-            p90_latency.append(np.percentile(latencies[last_window_increase:i], 90))
-            p50_latency.append(np.percentile(latencies[last_window_increase:i], 50))
+            # Compute latency percentiles for this window:
+            p99_latency[window_idx] = np.percentile(latencies, 99)
+            p90_latency[window_idx] = np.percentile(latencies, 90)
+            p50_latency[window_idx] = np.percentile(latencies, 50)
 
-            last_window_increase = i
-            cur_window += STEP_NANO
 
-        # Will the request finish in this window? (Probably not, since STEP_NANO is small)
-        # If not, we consider it to be outstanding.
-        if finish > cur_window:
-            cur_outstanding.put(finish)
+            # Clear latency list
+            latencies = []
+
+            # Update window index and current window timestamp
+            window_idx += 1
+            window_timestamp += STEP_NANO
+
+            if window_idx == N_WINDOWS:
+                break
+
+        # Will the request finish in this window? (Probably not, since STEP_NANO 
+        # is small) If not, we consider it to be outstanding.
+        if finish > window_timestamp:
+            cur_outstanding.push(finish)
         else:
             total_finished += 1
+            latencies.append(latency) # convert to ms
 
-    seconds = [i/(10**9/STEP_NANO) for i in range(len(outstanding))]
+
+    seconds = [i/(10**9/STEP_NANO) for i in range(N_WINDOWS)]
 
     aggregate_data = {
         "latency": {
-            "p99": float(np.percentile(latencies, 99)),
-            "p90": float(np.percentile(latencies, 90)),
-            "p50": float(np.percentile(latencies, 50))
+            "p99": float(np.percentile(total_latencies, 99)),
+            "p90": float(np.percentile(total_latencies, 90)),
+            "p50": float(np.percentile(total_latencies, 50))
         },
 
         "throughput": {
-            "p50": float(np.percentile(provided_load, 50)),
-            "p10": float(np.percentile(provided_load, 10)),
-            "p1": float(np.percentile(provided_load, 1))
+            "p50": float(np.percentile(throughput, 50)),
+            "p10": float(np.percentile(throughput, 10)),
+            "p1": float(np.percentile(throughput, 1))
         },
 
         "outstanding": {
@@ -134,14 +143,12 @@ def process_timeseries(timestamps):
             "p90": float(np.percentile(outstanding, 90)),
             "p50": float(np.percentile(outstanding, 50)),
         }
-
     }
 
     data = {
-        # I COULD just save everything as a numpy scalar/int, but that would be hard to read.
         "outstanding": [int(n) for n in outstanding],
         "seconds": [float(n) for n in seconds],
-        "throughput": [float(n) for n in provided_load],
+        "throughput": [float(n) for n in throughput],
         "p99": [float(n) for n in p99_latency],
         "p90": [float(n) for n in p90_latency],
         "p50": [float(n) for n in p50_latency]
@@ -202,42 +209,39 @@ def main():
 
             # Overwrite default flags with flags from workload config:
             for key in workload_config.keys():
-                if key in flags.keys():
-                    flags[key] = workload_config[key]
+                flags[key] = workload_config[key]
 
             for flag, value in flags.items():
-                cmd += "--" + flag
-
-                # Some flags are booleans (ex: --drop and --tolerate-errors), so those don't have
-                # values associated with them. Numeric values should also be converted to strings
-                # before we add them to the command.
+                print(flag, value)
                 if type(value) is bool:
-                    pass
+                    if value:
+                        cmd += f"--{flag}"
+                    else:
+                        pass
                 elif type(value) is int:
-                    cmd += "=" + str(value)
+                    cmd += f"--{flag}={str(value)}"
                 else:
-                    cmd += "=" + value
+                    cmd += f"--{flag}={value}"
                 
                 cmd += " "
 
             cmd += " ".join(conn_strings)
 
             # Run workload:
-            print("RUNNING EXPERIMENT")
-            print("FLAGS:")
-            for flag, value in flags.items():
-                print("\t" + flag, value)
-            
+            print("running experiment w/ flags:")
+            print(", ".join([f"{f}={v}" for f, v in flags.items()]))
+            os.system("cockroach workload init kv " + " ".join(conn_strings))
             os.system(cmd)
+            
+            # TODO(jstankevicius): The reason we get more timestamps than we 
+            # want is because the histogram registry gets ticked one last time
+            # at the end of the experiment, emitting some more timestamps that
+            # came back.
 
-            # The workload generator produces a file called "requests.txt" in the directory from which 
-            # it was called. This file contains many duplicate timestamp lines that are also not sorted
-            # by start time (as we would like). It is also frequently the case that the timestamps indicate
-            # an experiment longer than was specified by --duration, so we trim the trace.
-
-            # (please do not try this on your home computer)
             with open("requests.txt", "r") as infile:
-                lines = sorted(list(set(infile.readlines())))
+                lines = infile.readlines()
+                timestamps = np.array([list_stoi(line.split()) for line in sorted(lines)])
+                
                 duration = flags["duration"] # "duration" is actually a string, like "30s"
 
                 # This means don't run workloads under 1 second!
@@ -247,7 +251,7 @@ def main():
                 elif time_unit == "m":
                     duration = int(duration[:-1])*60
 
-                lines = trim(lines, 0, duration)
+                timestamps = trim(timestamps, 0, duration)
 
             # The "naming convention" (if you can call it that) is pretty dumb here. We just name the trace
             # after the workload-specific flags that were used to create it.
@@ -258,20 +262,19 @@ def main():
             os.system("rm requests.txt")
             
             # Process the trace into a YAML file:
-            timeseries, aggregate_data = process_timeseries(lines)
+            timeseries, aggregate_data = process_timeseries(timestamps, duration)
             with open("{}/{}.yaml".format(name, exp_name), "w") as data_file:
 
                 exp_data = {
+                    "name": name,
                     "flags": flags,
                     "aggregate": aggregate_data,
                     "ts": timeseries
                 }
                 yaml.dump(exp_data, data_file, default_flow_style=None, width=80)
 
-            # Wait 30 seconds for things to quiet down.
-            time.sleep(5)
             kill_cluster(n_nodes)
-            time.sleep(30)
+            time.sleep(2)
 
 
 if __name__ == "__main__":

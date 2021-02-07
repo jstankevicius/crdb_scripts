@@ -8,5 +8,5 @@ sudo chmod -R 777 go
 mkdir -p go/src/github.com/cockroachdb
 cd go/src/github.com/cockroachdb
 git config --global user.name "jstankevicius"
-git config --globla user.email "juuuuuustas@gmail.com"
+git config --global user.email "juuuuuustas@gmail.com"
 git clone https://github.com/jstankevicius/cockroach

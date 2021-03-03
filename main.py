@@ -172,7 +172,6 @@ def start_cluster(n_nodes):
         ssh_cmd("node-" + str(i), cmd)
     
     ssh_cmd("node-0", "cockroach init --insecure --host=node-0:26257")
-    #ssh_cmd("node-0", "cockroach sql --insecure --host=node-0:26257 --execute 'SET CLUSTER SETTING grpc_server.admission_concurrency=10'")
     time.sleep(2)
 
 def kill_cluster(n_nodes):
@@ -194,6 +193,9 @@ def main():
         # List of dictionaries containing workload-specific flags
         configs = conf["configs"]
 
+        # SQL statements that should be executed against the cluster:
+        sql_stmts = conf["sql-statements"]
+
         # Figure out connection strings. These stay the same during all workloads.
         # This assumes all nodes are named node-0 to node-(n_nodes-1), and that the
         # listen-addr flag was set to the node's 26257 port.
@@ -206,6 +208,10 @@ def main():
             flags = defaults
 
             start_cluster(n_nodes)
+
+            for stmt in sql_stmts:
+                print(f"cockroach sql --insecure --host=node-0:26257 --execute '{stmt}'")
+                os.system(f"cockroach sql --insecure --host=node-0:26257 --execute '{stmt};'")
 
             # Overwrite default flags with flags from workload config:
             for key in workload_config.keys():

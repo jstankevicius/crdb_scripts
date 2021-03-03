@@ -24,8 +24,8 @@ TIMESTR = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # percentiles besides the ones below. We only plot a select few percentiles per
 # experiment because the graph would otherwise become very cluttered.
 DEFAULT_PERCENTILES = {
-    "throughput": ["p50", "p1"],
-    "latency": ["p99"],
+    "throughput": ["p50", "p10", "p1"],
+    "latency": ["p99", "p90", "p50"],
     "outstanding": ["p99"]
 }
 

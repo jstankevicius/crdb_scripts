@@ -1,31 +1,37 @@
 # Name of the folder into which processed YAML files are thrown
-name: test2
+name: ts
 
-# This will assume that if there are 4 nodes, they will be named node-0 ... node-3.
-nodes: 4 
+# (Resolvable) names of the cluster nodes. These can be IP addresses as well.
+nodes: [node-0, node-1, node-2, node-3]
 
-# Default workload settings. These are changed by the per-workload settings, if at all.
-# They otherwise stay constant throughout the entire experiment.
+# Default workload settings. These are changed by the per-workload settings, 
+# if at all. They otherwise stay constant throughout the entire experiment.
 defaults: {
-  duration: 20s,
-  display-every: 10s,
+  duration: 10s,
+  display-every: 1s,
   splits: 24,
   tolerate-errors: true,
   drop: true,
-  max-rate: 10000,
-  concurrency: 256,
+  max-rate: 20000,
+  concurrency: 2048,
 }
 
-# SQL statements that should be executed against the cluster upon workload startup. 
-# Useful for setting various client- or server-side parameters when benchmarking. 
-# A common use-case is configuring statement timeouts or changing cluster settings.
+# SQL statements that should be executed against the cluster upon workload 
+# startup. Useful for setting various client- or server-side parameters when 
+# benchmarking. A common use-case is configuring statement timeouts or changing 
+# cluster settings.
 sql-statements: [
- "SET statement_timeout=100"
+ # "SET CLUSTER SETTING some_cluster_setting = 100;"
 ]
+
+# Session variables will not persist for every worker if we just execute an SQL
+# statement against the cluster at startup, so they get appended to the 
+# connection URL.
+session-vars: {
+  # statement_timeout: 100 # if numeric, is interpreted as ms
+}
 
 # Per-workload settings:
 configs: [
   {max-rate: 20000},
-  {max-rate: 30000},
-  {max-rate: 40000}
 ]

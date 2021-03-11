@@ -1,36 +1,14 @@
-import yaml
 import os
 import numpy as np
+import subprocess
 import time
-import numpy as np
+import yaml
+
 from pqueue import PriorityQueue
 from tqdm import tqdm
 
 def list_stoi(l):
     return [int(s) for s in l]
-
-# We shouldn't even need to do this. 
-def trim(timestamps, ignore_start=0, ignore_end=120):
-    print("trimming with parameters", ignore_start, ignore_end)
-    print("trace starts", len(timestamps), "lines long")
-
-    start_timestamp_index = 0
-    end_timestamp_index = 0
-    experiment_start = timestamps[0][0]
-
-    for i in range(0, len(timestamps)):
-        if (timestamps[i][0] - experiment_start)/(10**9) > ignore_start:
-            start_timestamp_index = i
-            break
-
-    for i in range(len(timestamps) - 1, 0, -1):
-        if (timestamps[i][1] - experiment_start)/(10**9) >= ignore_end:
-            end_timestamp_index = i
-            break
-
-    timestamps = timestamps[start_timestamp_index:end_timestamp_index]
-    print("trace ends", len(timestamps), "lines long")
-    return timestamps
 
 def process_timeseries(timestamps, duration):
 
@@ -70,49 +48,12 @@ def process_timeseries(timestamps, duration):
     # in time.
     cur_outstanding  = PriorityQueue()
 
-    for i in tqdm(range(N_REQUESTS)):
+    for i in range(N_REQUESTS):
 
         start = timestamps[i][0]
         finish = timestamps[i][1]
         latency = (finish - start)/(10**6)
         total_latencies.append(latency)
-
-        # Check the request's start time. Is it outside our current window? If 
-        # yes, then we should collect all data about this interval and increment 
-        # the window.
-        if start > window_timestamp:
-			
-            if cur_outstanding.head() is not None:
-                while cur_outstanding.head() < window_timestamp:
-                    total_finished += 1
-                    cur_outstanding.pop()
-                    if cur_outstanding.empty():
-                        break
-
-            # Register stats about this window:
-            outstanding[window_idx] = cur_outstanding.size()
-            throughput[window_idx] = total_finished/0.1
-            
-            # Reset counter for the next window:
-            total_finished = 0
-            if len(latencies) == 0:
-                latencies = [0]
-
-            # Compute latency percentiles for this window:
-            p99_latency[window_idx] = np.percentile(latencies, 99)
-            p90_latency[window_idx] = np.percentile(latencies, 90)
-            p50_latency[window_idx] = np.percentile(latencies, 50)
-
-
-            # Clear latency list
-            latencies = []
-
-            # Update window index and current window timestamp
-            window_idx += 1
-            window_timestamp += STEP_NANO
-
-            if window_idx == N_WINDOWS:
-                break
 
         # Will the request finish in this window? (Probably not, since STEP_NANO 
         # is small) If not, we consider it to be outstanding.
@@ -122,8 +63,49 @@ def process_timeseries(timestamps, duration):
             total_finished += 1
             latencies.append(latency) # convert to ms
 
+        # Check the request's start time. Is it outside our current window? If 
+        # yes, then we should collect all data about this interval and increment 
+        # the window. We should also be writing data out if we run out of 
+        # requests.
+        if start > window_timestamp or i == N_REQUESTS - 1:
+            since = (window_timestamp - START_NANO)/(10**9)
+                        
+            if cur_outstanding.head() is not None:
 
-    seconds = [i/(10**9/STEP_NANO) for i in range(N_WINDOWS)]
+                while cur_outstanding.head() <= window_timestamp:
+                    total_finished += 1
+                    cur_outstanding.pop()
+
+                    if cur_outstanding.empty():
+                        break
+
+            # Register stats about this window:
+            outstanding[window_idx] = cur_outstanding.size()
+            throughput[window_idx] = total_finished/0.1
+            
+            if len(latencies) == 0:
+                latencies = [0]
+
+            # Compute latency percentiles for this window:
+            p99_latency[window_idx] = np.percentile(latencies, 99)
+            p90_latency[window_idx] = np.percentile(latencies, 90)
+            p50_latency[window_idx] = np.percentile(latencies, 50)
+
+            # Clear latency list
+            latencies = []
+
+            # Reset counter for the next window:
+            total_finished = 0
+
+            # Update window index and current window timestamp
+            window_idx += 1
+            window_timestamp += STEP_NANO
+
+        if window_idx == N_WINDOWS:
+            break
+
+
+    seconds = [i*STEP_NANO/(10**9) for i in range(N_WINDOWS)]
 
     aggregate_data = {
         "latency": {
@@ -157,8 +139,12 @@ def process_timeseries(timestamps, duration):
     return data, aggregate_data
 
 def ssh_cmd(node_name, cmd):
-    print('sudo ssh -t root@{} "{}"'.format(node_name, cmd))
-    os.system('sudo ssh -t root@{} "{}"'.format(node_name, cmd))
+    result = subprocess.run(
+        ["sudo", "ssh", "-t", f"root@{node_name}", f"{cmd}"], 
+        stdout=subprocess.DEVNULL
+    )
+
+    return result.returncode
 
 def start_cluster(n_nodes):
     join_str = ",".join(["node-{}:26257".format(i) for i in range(n_nodes)])
@@ -171,22 +157,21 @@ def start_cluster(n_nodes):
         cmd += " --background"
         ssh_cmd("node-" + str(i), cmd)
     
-    ssh_cmd("node-0", "cockroach init --insecure --host=node-0:26257")
+    print("initializing cluster...")
+    result = ssh_cmd("node-0", "cockroach init --insecure --host=node-0:26257")
     time.sleep(2)
 
 def kill_cluster(n_nodes):
     for i in range(n_nodes):
         node_name = "node-"+str(i)
-        ssh_cmd(node_name, "pkill -9 cockroach")
-        ssh_cmd(node_name, "pkill -9 cockroach")
-        ssh_cmd(node_name, "sudo rm -r /mnt/sda4/node")
+        ssh_cmd(node_name, "pkill -9 cockroach ; pkill -9 cockroach ; sudo rm -r /mnt/sda4/node")
 
 def main():
     with open("config.yaml") as conf_file:
 
         conf = yaml.full_load(conf_file)
         name = conf["name"]
-        n_nodes = conf["nodes"]
+        n_nodes = len(conf["nodes"])
 
         defaults = conf["defaults"]
 
@@ -196,10 +181,24 @@ def main():
         # SQL statements that should be executed against the cluster:
         sql_stmts = conf["sql-statements"]
 
+        # Session variables.
+        session_vars = conf["session-vars"]
+
         # Figure out connection strings. These stay the same during all workloads.
         # This assumes all nodes are named node-0 to node-(n_nodes-1), and that the
-        # listen-addr flag was set to the node's 26257 port.
-        conn_strings = ["'postgresql://root@node-" + str(i) + ":26257?sslmode=disable'" for i in range(n_nodes)]
+        # listen-addr flag was set to the node's 26257 port. 
+
+        # When initializing the workload, we shouldn't be using any session 
+        # variables because we might fail initialization. For example, init
+        # will fail if we set statement_timeout to a low value.
+        init_strings = ["postgresql://root@node-" + str(i) + ":26257?sslmode=disable" for i in range(n_nodes)]
+
+        # Now attach all session parameters:
+        conn_strings = [s + ''.join([f"&{var}={val}" for var, val in session_vars.items()]) for s in init_strings]
+
+        # wrap in single quotes so terminal doesn't scream at us
+        init_strings = [f"'{s}'" for s in init_strings]
+        conn_strings = [f"'{s}'" for s in conn_strings]
         
         os.system("mkdir -p " + name + "/traces")
 
@@ -210,15 +209,13 @@ def main():
             start_cluster(n_nodes)
 
             for stmt in sql_stmts:
-                print(f"cockroach sql --insecure --host=node-0:26257 --execute '{stmt}'")
-                os.system(f"cockroach sql --insecure --host=node-0:26257 --execute '{stmt};'")
+                os.system(f"cockroach sql --insecure --host=node-0:26257 --execute '{stmt}'")
 
             # Overwrite default flags with flags from workload config:
             for key in workload_config.keys():
                 flags[key] = workload_config[key]
 
             for flag, value in flags.items():
-                print(flag, value)
                 if type(value) is bool:
                     if value:
                         cmd += f"--{flag}"
@@ -236,39 +233,55 @@ def main():
             # Run workload:
             print("running experiment w/ flags:")
             print(", ".join([f"{f}={v}" for f, v in flags.items()]))
-            os.system("cockroach workload init kv " + " ".join(conn_strings))
+            os.system("cockroach workload init kv " + " ".join(init_strings))
             os.system(cmd)
             
-            # TODO(jstankevicius): The reason we get more timestamps than we 
-            # want is because the histogram registry gets ticked one last time
-            # at the end of the experiment, emitting some more timestamps that
-            # came back.
+            # "duration" is actually a string, like "30s"
+            duration = flags["duration"] 
 
-            with open("requests.txt", "r") as infile:
-                lines = infile.readlines()
-                timestamps = np.array([list_stoi(line.split()) for line in sorted(lines)])
-                
-                duration = flags["duration"] # "duration" is actually a string, like "30s"
+            # This means don't run workloads under 1 second!
+            time_unit = duration[-1]
+            if time_unit == "s":
+                duration = int(duration[:-1])
+            elif time_unit == "m":
+                duration = int(duration[:-1])*60
 
-                # This means don't run workloads under 1 second!
-                time_unit = duration[-1]
-                if time_unit == "s":
-                    duration = int(duration[:-1])
-                elif time_unit == "m":
-                    duration = int(duration[:-1])*60
-
-                timestamps = trim(timestamps, 0, duration)
-
-            # The "naming convention" (if you can call it that) is pretty dumb here. We just name the trace
-            # after the workload-specific flags that were used to create it.
+            # The "naming convention" (if you can call it that) is pretty dumb 
+            # here. We just name the trace after the workload-specific flags 
+            # that were used to create it.
             exp_name = "_".join([flag + str(value) for flag, value in workload_config.items()])
             with open("{}/traces/{}.txt".format(name, exp_name), "w") as trace:
                 trace.writelines(lines)
+
+            # map of request ids to request start and finish times
+            requests = {}
             
-            os.system("rm requests.txt")
+            with open("start.txt") as started_file:
+                for line in started_file:
+                    req_id, ts = line.split()
+                    requests[int(req_id)] = [int(ts), np.Inf]
+            
+            with open("end.txt") as finished_file:
+                for line in finished_file:  
+                    req_id, ts = line.split()
+                    requests[int(req_id)][1] = int(ts)
+
+            exp_start = requests[1][0]
+            for req_id, ts_pair in requests.items():
+                start, finish = ts_pair
+            
+            # IDs are ALMOST sorted by time. Unfortunately, concurrency is cruel
+            # and sometimes a goroutine ends up determining its ID, pausing, and
+            # only taking the timestamp later, after another goroutine. So we 
+            # have to sort.
+            requests = list(requests.values())
+            requests.sort(key=lambda x: x[0])
+            requests = np.array(requests)
+            
+            os.system("rm start.txt end.txt")
             
             # Process the trace into a YAML file:
-            timeseries, aggregate_data = process_timeseries(timestamps, duration)
+            timeseries, aggregate_data = process_timeseries(requests, duration)
             with open("{}/{}.yaml".format(name, exp_name), "w") as data_file:
 
                 exp_data = {

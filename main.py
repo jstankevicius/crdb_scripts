@@ -246,13 +246,6 @@ def main():
             elif time_unit == "m":
                 duration = int(duration[:-1])*60
 
-            # The "naming convention" (if you can call it that) is pretty dumb 
-            # here. We just name the trace after the workload-specific flags 
-            # that were used to create it.
-            exp_name = "_".join([flag + str(value) for flag, value in workload_config.items()])
-            with open("{}/traces/{}.txt".format(name, exp_name), "w") as trace:
-                trace.writelines(lines)
-
             # map of request ids to request start and finish times
             requests = {}
             
@@ -276,12 +269,16 @@ def main():
             # have to sort.
             requests = list(requests.values())
             requests.sort(key=lambda x: x[0])
-            requests = np.array(requests)
-            
+
             os.system("rm start.txt end.txt")
+
+            # The "naming convention" (if you can call it that) is pretty dumb 
+            # here. We just name the trace after the workload-specific flags 
+            # that were used to create it.
+            exp_name = "_".join([flag + str(value) for flag, value in workload_config.items()])
             
             # Process the trace into a YAML file:
-            timeseries, aggregate_data = process_timeseries(requests, duration)
+            timeseries, aggregate_data = process_timeseries(np.array(requests), duration)
             with open("{}/{}.yaml".format(name, exp_name), "w") as data_file:
 
                 exp_data = {
@@ -291,6 +288,17 @@ def main():
                     "ts": timeseries
                 }
                 yaml.dump(exp_data, data_file, default_flow_style=None, width=80)
+
+            with open("{}/traces/{}.txt".format(name, exp_name), "w") as trace:
+                # Convert everything back to a string and write out to file:
+                lines = []
+                for start, finish in requests:
+                    lines.append(f"{start}\t{finish}\n")
+
+                trace.writelines(lines)
+            
+            # retrieve logs
+            os.system(f"mkdir -p {name}/logs")
 
             kill_cluster(n_nodes)
             time.sleep(2)

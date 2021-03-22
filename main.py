@@ -55,21 +55,12 @@ def process_timeseries(timestamps, duration):
         latency = (finish - start)/(10**6)
         total_latencies.append(latency)
 
-        # Will the request finish in this window? (Probably not, since STEP_NANO 
-        # is small) If not, we consider it to be outstanding.
-        if finish > window_timestamp:
-            cur_outstanding.push(finish)
-        else:
-            total_finished += 1
-            latencies.append(latency) # convert to ms
-
         # Check the request's start time. Is it outside our current window? If 
         # yes, then we should collect all data about this interval and increment 
         # the window. We should also be writing data out if we run out of 
         # requests.
         if start > window_timestamp or i == N_REQUESTS - 1:
-            since = (window_timestamp - START_NANO)/(10**9)
-                        
+            
             if cur_outstanding.head() is not None:
 
                 while cur_outstanding.head() <= window_timestamp:
@@ -101,8 +92,25 @@ def process_timeseries(timestamps, duration):
             window_idx += 1
             window_timestamp += STEP_NANO
 
+        # If we are here, that means we're still inside our original window.
+        # Then we should consider if a request will finish inside the window or
+        # not. If not, we consider it to be outstanding.
+        if finish > window_timestamp:
+            cur_outstanding.push(finish)
+        else:
+            total_finished += 1
+            latencies.append(latency) # convert to ms
+
         if window_idx == N_WINDOWS:
             break
+
+    # If we fell out with window_idx != windows, copy everything from the last
+    # window w/ recorded data to other windows. This only occurs when we run
+    # out of requests to process early.
+    diff = N_WINDOWS - window_idx
+
+    if window_idx < N_WINDOWS:
+        np.copyto(outstanding[window_idx-1:], outstanding[window_idx-1])
 
 
     seconds = [i*STEP_NANO/(10**9) for i in range(N_WINDOWS)]
@@ -248,27 +256,31 @@ def main():
 
             # map of request ids to request start and finish times
             requests = {}
+            worker_requests = {}
             
+            # for computing unfinished request #
+            unfinished = 0
+
             with open("start.txt") as started_file:
                 for line in started_file:
-                    req_id, ts = line.split()
-                    requests[int(req_id)] = [int(ts), np.Inf]
+                    worker_id, req_id, ts = [int(s) for s in line.split()]
+                    requests[req_id] = [worker_id, ts, np.Inf]
+                    unfinished += 1
             
             with open("end.txt") as finished_file:
                 for line in finished_file:  
-                    req_id, ts = line.split()
-                    requests[int(req_id)][1] = int(ts)
+                    worker_id, req_id, ts = [int(s) for s in line.split()]
+                    requests[req_id][2] = ts
+                    unfinished -= 1
 
-            exp_start = requests[1][0]
-            for req_id, ts_pair in requests.items():
-                start, finish = ts_pair
-            
+            print(f"{unfinished} requests never finished.")
+
             # IDs are ALMOST sorted by time. Unfortunately, concurrency is cruel
             # and sometimes a goroutine ends up determining its ID, pausing, and
             # only taking the timestamp later, after another goroutine. So we 
             # have to sort.
             requests = list(requests.values())
-            requests.sort(key=lambda x: x[0])
+            requests.sort(key=lambda x: x[1])
 
             os.system("rm start.txt end.txt")
 
@@ -278,7 +290,7 @@ def main():
             exp_name = "_".join([flag + str(value) for flag, value in workload_config.items()])
             
             # Process the trace into a YAML file:
-            timeseries, aggregate_data = process_timeseries(np.array(requests), duration)
+            timeseries, aggregate_data = process_timeseries(np.array(requests)[:, [1, 2]], duration)
             with open("{}/{}.yaml".format(name, exp_name), "w") as data_file:
 
                 exp_data = {
@@ -292,7 +304,7 @@ def main():
             with open("{}/traces/{}.txt".format(name, exp_name), "w") as trace:
                 # Convert everything back to a string and write out to file:
                 lines = []
-                for start, finish in requests:
+                for worker_id, start, finish in requests:
                     lines.append(f"{start}\t{finish}\n")
 
                 trace.writelines(lines)

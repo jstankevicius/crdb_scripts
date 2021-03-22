@@ -7,8 +7,8 @@ nodes: [node-0, node-1, node-2, node-3]
 # Default workload settings. These are changed by the per-workload settings, 
 # if at all. They otherwise stay constant throughout the entire experiment.
 defaults: {
-  duration: 2m,
-  display-every: 15s,
+  duration: 1m,
+  display-every: 5s,
   splits: 24,
   tolerate-errors: true,
   drop: true,
@@ -27,10 +27,10 @@ sql-statements: [
 # statement against the cluster at startup, so they get appended to the 
 # connection URL.
 session-vars: {
-  # statement_timeout: 100 # if numeric, is interpreted as ms
+  # statement_timeout: 1000 # if numeric, is interpreted as ms
 }
 
 # Per-workload settings:
 configs: [
-  {max-rate: 100000},
+  {max-rate: 90000},
 ]

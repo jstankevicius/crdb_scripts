@@ -5,146 +5,8 @@ import time
 import yaml
 
 from pqueue import PriorityQueue
+from processing import process_timeseries
 from tqdm import tqdm
-
-def list_stoi(l):
-    return [int(s) for s in l]
-
-def process_timeseries(timestamps, duration):
-
-    # Constants:
-    N_REQUESTS = len(timestamps)
-    START_NANO = timestamps[0][0]
-    STEP_NANO = 10**8 # The length of the step window in nanoseconds.
-
-    # Figure out how many windows we're going to collect data for:
-    # (we add 1 because this is including the "fake" window that ends at t=0)
-    N_WINDOWS = int(duration*(10**9)/STEP_NANO) + 1
-
-    # window_timestamp is the current maximum start timestamp we will consider 
-    # before deciding that we should move on to the next window.
-    window_timestamp = START_NANO + STEP_NANO
-    # Index of the "right side" of the current window.
-    window_idx       = 1
-
-    # Because latency is measured for every request, we cannot just measure
-    # "total latency" for a single window. We're instead going to collect
-    # latencies for all requests that finish inside a window and then take
-    # percentiles.
-    latencies        = []
-    total_latencies  = [] # latencies of EVERY request
-
-    # Timeseries data:
-    outstanding      = np.zeros(shape=(N_WINDOWS,))
-    throughput       = np.zeros(shape=(N_WINDOWS,))
-    p99_latency      = np.zeros(shape=(N_WINDOWS,))
-    p90_latency      = np.zeros(shape=(N_WINDOWS,))
-    p50_latency      = np.zeros(shape=(N_WINDOWS,))
-
-    # Number of requests finished in the current window:
-    total_finished   = 0
-    
-    # Used to store all requests we consider to be outstanding at a given point 
-    # in time.
-    cur_outstanding  = PriorityQueue()
-
-    for i in range(N_REQUESTS):
-
-        start = timestamps[i][0]
-        finish = timestamps[i][1]
-        latency = (finish - start)/(10**6)
-        total_latencies.append(latency)
-
-        # Check the request's start time. Is it outside our current window? If 
-        # yes, then we should collect all data about this interval and increment 
-        # the window. We should also be writing data out if we run out of 
-        # requests.
-        if start > window_timestamp or i == N_REQUESTS - 1:
-            
-            if cur_outstanding.head() is not None:
-
-                while cur_outstanding.head() <= window_timestamp:
-                    total_finished += 1
-                    cur_outstanding.pop()
-
-                    if cur_outstanding.empty():
-                        break
-
-            # Register stats about this window:
-            outstanding[window_idx] = cur_outstanding.size()
-            throughput[window_idx] = total_finished/0.1
-            
-            if len(latencies) == 0:
-                latencies = [0]
-
-            # Compute latency percentiles for this window:
-            p99_latency[window_idx] = np.percentile(latencies, 99)
-            p90_latency[window_idx] = np.percentile(latencies, 90)
-            p50_latency[window_idx] = np.percentile(latencies, 50)
-
-            # Clear latency list
-            latencies = []
-
-            # Reset counter for the next window:
-            total_finished = 0
-
-            # Update window index and current window timestamp
-            window_idx += 1
-            window_timestamp += STEP_NANO
-
-        # If we are here, that means we're still inside our original window.
-        # Then we should consider if a request will finish inside the window or
-        # not. If not, we consider it to be outstanding.
-        if finish > window_timestamp:
-            cur_outstanding.push(finish)
-        else:
-            total_finished += 1
-            latencies.append(latency) # convert to ms
-
-        if window_idx == N_WINDOWS:
-            break
-
-    # If we fell out with window_idx != windows, copy everything from the last
-    # window w/ recorded data to other windows. This only occurs when we run
-    # out of requests to process early.
-    diff = N_WINDOWS - window_idx
-
-    if window_idx < N_WINDOWS:
-        np.copyto(outstanding[window_idx-1:], outstanding[window_idx-1])
-
-
-    seconds = [i*STEP_NANO/(10**9) for i in range(N_WINDOWS)]
-
-    aggregate_data = {
-        "latency": {
-            "p99": float(np.percentile(total_latencies, 99)),
-            "p90": float(np.percentile(total_latencies, 90)),
-            "p50": float(np.percentile(total_latencies, 50))
-        },
-
-        "throughput": {
-            "p50": float(np.percentile(throughput, 50)),
-            "p10": float(np.percentile(throughput, 10)),
-            "p1": float(np.percentile(throughput, 1))
-        },
-
-        "outstanding": {
-            "p99": float(np.percentile(outstanding, 99)),
-            "p90": float(np.percentile(outstanding, 90)),
-            "p50": float(np.percentile(outstanding, 50)),
-        }
-    }
-
-    data = {
-        "outstanding": [int(n) for n in outstanding],
-        "seconds": [float(n) for n in seconds],
-        "throughput": [float(n) for n in throughput],
-        "p99": [float(n) for n in p99_latency],
-        "p90": [float(n) for n in p90_latency],
-        "p50": [float(n) for n in p50_latency]
-    }
-
-    return data, aggregate_data
 
 def ssh_cmd(node_name, cmd):
     result = subprocess.run(
@@ -174,7 +36,7 @@ def kill_cluster(n_nodes):
         node_name = "node-"+str(i)
         ssh_cmd(node_name, "pkill -9 cockroach ; pkill -9 cockroach ; sudo rm -r /mnt/sda4/node")
 
-def main():
+def run():
     with open("config.yaml") as conf_file:
 
         conf = yaml.full_load(conf_file)
@@ -256,21 +118,20 @@ def main():
 
             # map of request ids to request start and finish times
             requests = {}
-            worker_requests = {}
             
             # for computing unfinished request #
             unfinished = 0
 
             with open("start.txt") as started_file:
                 for line in started_file:
-                    worker_id, req_id, ts = [int(s) for s in line.split()]
-                    requests[req_id] = [worker_id, ts, np.Inf]
+                    req_id, ts = [int(s) for s in line.split()]
+                    requests[req_id] = [ts, np.Inf]
                     unfinished += 1
             
             with open("end.txt") as finished_file:
                 for line in finished_file:  
-                    worker_id, req_id, ts = [int(s) for s in line.split()]
-                    requests[req_id][2] = ts
+                    req_id, ts = [int(s) for s in line.split()]
+                    requests[req_id][1] = ts
                     unfinished -= 1
 
             print(f"{unfinished} requests never finished.")
@@ -280,7 +141,7 @@ def main():
             # only taking the timestamp later, after another goroutine. So we 
             # have to sort.
             requests = list(requests.values())
-            requests.sort(key=lambda x: x[1])
+            requests.sort(key=lambda x: x[0])            
 
             os.system("rm start.txt end.txt")
 
@@ -290,7 +151,7 @@ def main():
             exp_name = "_".join([flag + str(value) for flag, value in workload_config.items()])
             
             # Process the trace into a YAML file:
-            timeseries, aggregate_data = process_timeseries(np.array(requests)[:, [1, 2]], duration)
+            timeseries, aggregate_data = process_timeseries(np.array(requests), duration)
             with open("{}/{}.yaml".format(name, exp_name), "w") as data_file:
 
                 exp_data = {
@@ -304,7 +165,7 @@ def main():
             with open("{}/traces/{}.txt".format(name, exp_name), "w") as trace:
                 # Convert everything back to a string and write out to file:
                 lines = []
-                for worker_id, start, finish in requests:
+                for start, finish in requests:
                     lines.append(f"{start}\t{finish}\n")
 
                 trace.writelines(lines)
@@ -314,6 +175,14 @@ def main():
 
             kill_cluster(n_nodes)
             time.sleep(2)
+
+def main():
+    try:
+        run()
+    except:
+        print("An exception has occurred")
+        os.system("rm start.txt end.txt")
+        kill_cluster(4) # some more hardcoding
 
 
 if __name__ == "__main__":

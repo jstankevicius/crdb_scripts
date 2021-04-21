@@ -5,10 +5,10 @@ import time
 import yaml
 from cluster import Cluster
 
+from pprint import pprint
 from pqueue import PriorityQueue
 from processing import process_timeseries
 from tqdm import tqdm
-
 
 def run():
 
@@ -26,7 +26,7 @@ def run():
     # Figure out connection strings. These stay the same during all workloads.
     # We assume all nodes are listening on port 26257.
 
-    # When initializing the workload, we shouldn't be using any session 
+    # When initializing the workload, we shouldn't be using any s`e`ssion 
     # variables because we might fail initialization. For example, init
     # will fail if we set statement_timeout to a low value.
     init_strings = [f"postgresql://root@{name}:26257?sslmode=disable" for name in node_names]
@@ -121,6 +121,9 @@ def run():
         
         # Process the trace into a YAML file:
         timeseries, aggregate_data = process_timeseries(np.array(requests), duration)
+        print(exp_name + ":")
+        pprint(aggregate_data)
+
         with open("{}/{}.yaml".format(name, exp_name), "w") as data_file:
 
             exp_data = {

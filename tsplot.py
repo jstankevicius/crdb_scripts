@@ -1,4 +1,5 @@
 import argparse
+from cycler import cycler
 import datetime
 import glob
 import random
@@ -16,6 +17,10 @@ STAT_LABELS = {
     "latency": "latency (ms)",
     "outstanding": "# outstanding requests"
 }
+
+plt.rcParams["axes.prop_cycle"] = cycler(color=[
+    "#000000", "#CD0000", "#00CD00", "#0000EE", "#CD00CD", "#00CDCD", "#7F7F7F", "#75507B"])
+
 
 # In case this script is invoked and graphs are supposed to be saved, we'll take
 # a timestamp. This will be the prefix for all the graph image files.

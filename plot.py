@@ -4,6 +4,7 @@
 # good.
 
 import argparse
+from cycler import cycler
 import datetime
 import glob
 import matplotlib
@@ -26,7 +27,7 @@ TIMESTR = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DEFAULT_PERCENTILES = {
     "throughput": ["p50", "p10", "p1"],
     "latency": ["p99", "p90", "p50"],
-    "outstanding": ["p99"]
+    "outstanding": ["p99", "p90", "p50"]
 }
 
 STAT_LABELS = {
@@ -35,18 +36,27 @@ STAT_LABELS = {
     "outstanding": "# outstanding requests"
 }
 
+DOMAIN_LABELS = {
+    "max-rate": "target offered load (requests/sec)",
+    "concurrency": "# client threads"
+}
+
+plt.rcParams["axes.prop_cycle"] = cycler(color=[
+    "#000000", "#CD0000", "#00CD00", "#0000EE", "#CD00CD", "#00CDCD", "#7F7F7F", "#75507B"])
+
 def get_filepaths(rx):
     # Return all files matching the given regular expression.
     return glob.glob(os.path.join("", rx))
 
+# TODO: this is stupid
 def get_flags_and_aggregate(file):
     # Return a YAML file's 'flags' and 'aggregate' fields.
     with open(file) as f:
         y = yaml.full_load(f)
         return (y["flags"], y["aggregate"])
 
-def plot_exp_aggregate_stats(experiments, aggregate_stat, save=False):
-    fig = plt.figure()
+def plot_exp_aggregate_stats(experiments, domain_stat, aggregate_stat, percentiles):
+    fig = plt.figure(figsize=(4, 4))
 
     axes = plt.axes()
     lines = {}
@@ -57,8 +67,12 @@ def plot_exp_aggregate_stats(experiments, aggregate_stat, save=False):
         rates = exp_data.keys()
         
         for rate, aggregate in exp_data.items():
-            for percentile in DEFAULT_PERCENTILES[aggregate_stat]:
-                exp_fullname = f"{exp_name} ({percentile})"
+            for percentile in percentiles:
+
+                if len(experiments) > 1:
+                    exp_fullname = f"{exp_name} ({percentile})"
+                else:
+                    exp_fullname = percentile
                 if exp_fullname not in lines.keys():
                     lines[exp_fullname] = ([0] + list(rates), [0])
 
@@ -75,15 +89,12 @@ def plot_exp_aggregate_stats(experiments, aggregate_stat, save=False):
         if style_idx == len(STYLES):
             style_idx = 0
 
-    axes.legend(loc="upper left", fontsize="xx-small")
-    axes.set(xlabel="offered load (avg. requests/sec)", ylabel=STAT_LABELS[aggregate_stat])
+    axes.legend(loc="upper right", fontsize="small")
+    axes.set(xlabel=DOMAIN_LABELS[domain_stat], ylabel=STAT_LABELS[aggregate_stat])
     axes.grid()
-    plt.tight_layout()
 
-    if save:
-        imgname = f"{TIMESTR}_{aggregate_stat}.png"
-        fig.savefig(imgname)
-        print(f"graph saved as {imgname}")
+    return fig
+
 
 def main():
     parser = argparse.ArgumentParser(description="Utility for producing multi-experiment graphs.")
@@ -91,14 +102,11 @@ def main():
     parser.add_argument("dirs", nargs="+",
     help="one or more experiment directories or regular expressions")
 
-    parser.add_argument("-throughput", action="store_true",
-    help="produce a throughput graph")
+    parser.add_argument("-throughput", nargs="*", help="throughput percentiles")
 
-    parser.add_argument("-latency", action="store_true",
-    help="produce a latency graph")
+    parser.add_argument("-latency", nargs="*", help="latency percentiles")
 
-    parser.add_argument("-outstanding", action="store_true",
-    help="produce a graph of outstanding requests")
+    parser.add_argument("-outstanding", nargs="*", help="outstanding request percentiles")
 
     parser.add_argument("--show", action="store_true",
     help="show graphs on the screen")
@@ -106,18 +114,40 @@ def main():
     parser.add_argument("--save", action="store_true",
     help="save graphs in current directory as .png files")
 
+    parser.add_argument("--x", nargs="?", default="max-rate",
+    help="what to plot t/l/o against")
+
+    parser.add_argument("--title", nargs="?", default="", help="plot title")
     args = parser.parse_args()
 
-    # By default, if neither -l or -o are provided, we treat it as if we're just
-    # graphing throughput (since that's the most common use-case).
-    latency = args.latency
-    outstanding = args.outstanding
-    throughput = args.throughput or not (latency or outstanding)
+    # If either any of the throughput/latency/outstanding flags are not passed in, we do not graph
+    # them. If any are passed in with no arguments, we graph the default percentiles. If they are
+    # passed in with a list of percentiles, graph those percentiles.
+    graph_latency = args.latency is not None
+    graph_outstanding = args.outstanding is not None
+    graph_throughput = args.throughput is not None or not (graph_latency or graph_outstanding)
+
+    latency_percentiles = args.latency
+    throughput_percentiles = args.throughput
+    outstanding_percentiles = args.outstanding
+
+    if graph_latency:
+        if len(latency_percentiles) == 0:
+            latency_percentiles = DEFAULT_PERCENTILES["latency"]
+
+    if graph_outstanding:
+        if len(outstanding_percentiles) == 0:
+            outstanding_percentiles = DEFAULT_PERCENTILES["outstanding"]
+
+    if graph_throughput:
+        if len(throughput_percentiles) == 0:
+            throughput_percentiles = DEFAULT_PERCENTILES["throughput"]
+
     show = args.show
     save = args.save
 
     if not show and not save:
-        show = True # ...because otherwise what's the point of invoking this?
+        save = True # ...because otherwise what's the point of invoking this?
 
     exp_dirs = []
     for rx in args.dirs:
@@ -130,27 +160,60 @@ def main():
     #   3. aggregate data for latency/throughput/outstanding
     experiments = {}
     
-    # For now, we'll just assume that we're only plotting against max-rate.
-    for d in exp_dirs:
-        data = [get_flags_and_aggregate(d + "/" + f) for f in os.listdir(d) if isfile(join(d, f))]
+    # Go through each experiment directory.
+    for directory in exp_dirs:
+        data = []
+        
+        # Obtain everything inside the experiment directory.
+        for f in os.listdir(directory):
 
-        # max-rate is hardcoded. if we want to plot against other flags, we 
-        # might want to make this into a cmdline arg of its own.
-        data.sort(key=lambda f: f[0]["max-rate"])
-        rates = [f[0]["max-rate"] for f in data]
-        aggregate = [f[1] for f in data]
+            if isfile(join(directory, f)):
+                data.append(get_flags_and_aggregate(directory + "/" + f))
 
-        experiments[d] = {rates[i]: aggregate[i] for i in range(len(rates))}
+        # Sort experiments by args.x (which should be a flag) in ascending order. Then pull out each
+        # experiment's "domain" value (its place on the x-axis of the graph) and its "aggregate"
+        # statistic (its place on the y-axis).
+        data.sort(key=lambda f: f[0][args.x])
+        x = [f[0][args.x] for f in data]
+        y = [f[1] for f in data]
 
-    # Now plot (conditionally)
-    if throughput:
-        plot_exp_aggregate_stats(experiments, "throughput", save)
+        experiments[directory] = {x[i]: y[i] for i in range(len(x))}
+
+        # Now experiments looks like
+        # {
+        #     ["experiment-name"]: [x1: y1, x2: y2...]
+        # }
+
+    # Plot
+    if graph_throughput:
+        fig = plot_exp_aggregate_stats(experiments, args.x, "throughput", throughput_percentiles)
+        plt.title(args.title, wrap=True)
+        plt.tight_layout()
+
+        if args.save:
+            imgname = f"{TIMESTR}_throughput.png"
+            fig.savefig(imgname)
+            print(f"graph saved as {imgname}")
     
-    if latency:
-        plot_exp_aggregate_stats(experiments, "latency", save)
+    if graph_latency:
+        fig = plot_exp_aggregate_stats(experiments, args.title, args.x, "latency", latency_percentiles)
+        plt.title(args.title, wrap=True)
+        plt.tight_layout()
 
-    if outstanding:
-        plot_exp_aggregate_stats(experiments, "outstanding", save)
+        if args.save:
+            imgname = f"{TIMESTR}_latency.png"
+            fig.savefig(imgname)
+            print(f"graph saved as {imgname}")
+
+    if graph_outstanding:
+        fig = plot_exp_aggregate_stats(experiments, args.title, args.x, "outstanding", outstanding_percentiles)
+        plt.title(args.title, wrap=True)
+        plt.tight_layout()
+
+        if args.save:
+            imgname = f"{TIMESTR}_outstanding.png"
+            fig.savefig(imgname)
+            print(f"graph saved as {imgname}")
 
     if show:
         plt.show()

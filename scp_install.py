@@ -1,4 +1,3 @@
-from control import ssh_cmd
 import os
 N_NODES = 4
 ROACHDIR = "~/go/src/github.com/cockroachdb/cockroach"

@@ -31,61 +31,49 @@ def get_filepaths(rx):
     return glob.glob(os.path.join("", rx))
 
 
-def plot_ts_stat(workloads, ts_stat, save=False):
+def plot_ts_stat(workload, ts_stat):
 
-    # We support plotting multiple experiments at the same time.
-    for workload in workloads.values():
+    fig = plt.figure()
+    axes = plt.axes()
 
-        fig = plt.figure()
-        axes = plt.axes()
+    seconds = workload["ts"]["seconds"]
+    rate = workload["flags"]["max-rate"]
+    concurrency = workload["flags"]["concurrency"]
 
-        seconds = workload["ts"]["seconds"]
-        rate = workload["flags"]["max-rate"]
-        concurrency = workload["flags"]["concurrency"]
+    if ts_stat == "latency":
 
-        if ts_stat == "latency":
+        # Force latency to begin at 0.
+        # TODO(jstankevicius): This is (probably) because of an 
+        # off-by-one bug in the processing script.
+        workload["ts"]["p99"][0] = 0
+        workload["ts"]["p90"][0] = 0
+        workload["ts"]["p50"][0] = 0
 
-            # Force latency to begin at 0.
-            # TODO(jstankevicius): This is (probably) because of an 
-            # off-by-one bug in the processing script.
-            workload["ts"]["p99"][0] = 0
-            workload["ts"]["p90"][0] = 0
-            workload["ts"]["p50"][0] = 0
+        line99, = axes.plot(seconds, workload["ts"]["p99"])
+        line99.set_label("p99")
+        line90, = axes.plot(seconds, workload["ts"]["p90"])
+        line90.set_label("p90")
+        line50, = axes.plot(seconds, workload["ts"]["p50"])
+        line50.set_label("p50")
+        axes.set(xlabel="time (seconds)", ylabel=STAT_LABELS["latency"])
+        axes.set_title(f"latency vs. time for max-rate={rate}")
+        axes.legend(loc="upper left", fontsize="xx-small")
 
-            line99, = axes.plot(seconds, workload["ts"]["p99"])
-            line99.set_label("p99")
-            line90, = axes.plot(seconds, workload["ts"]["p90"])
-            line90.set_label("p90")
-            line50, = axes.plot(seconds, workload["ts"]["p50"])
-            line50.set_label("p50")
-            axes.set(xlabel="time (seconds)", ylabel=STAT_LABELS["latency"])
-            axes.set_title(f"latency vs. time for max-rate={rate}")
-            axes.legend(loc="upper left", fontsize="xx-small")
+    else:
+        ts = workload["ts"][ts_stat]
+        ts[0] = 0
+        line, = axes.plot(seconds, ts)
 
-        else:
-            ts = workload["ts"][ts_stat]
-            ts[0] = 0
-            line, = axes.plot(seconds, ts)
+        axes.set_title(f"{ts_stat} vs. time for max-rate={rate}")
+        axes.set(xlabel="time (s)", ylabel=STAT_LABELS[ts_stat])
 
-            axes.set_title(f"{ts_stat} vs. time for max-rate={rate}")
-            axes.set(xlabel="time (s)", ylabel=STAT_LABELS[ts_stat])
+    axes.grid()
 
-        axes.grid()
-        plt.tight_layout()
-
-        if save:
-            # We might have two different max-rate flags. In that case, it can
-            # be useful to identify experiments by random strings. I should 
-            # start including experiment names inside each YAML file.
-            # rstr = ''.join(random.choice(string.ascii_letters) for _ in range(6))
-            imgname = f"{rate}_{ts_stat}.png"
-            fig.savefig(imgname)
-            print(f"graph saved as {imgname}")
+    return fig
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Utility for producing per-experiment"
-    + " timeseries graphs.")
+    parser = argparse.ArgumentParser(description="Utility for producing per-workload timeseries graphs.")
 
     parser.add_argument("dirs", nargs="+",
     help="one or more experiment YAML files or regular expressions")
@@ -105,6 +93,8 @@ def main():
     parser.add_argument("--save", action="store_true",
     help="save graphs in current directory as .png files")
 
+    parser.add_argument("--title", nargs="?", default="", help="plot title")
+
     args = parser.parse_args()
 
     # By default, if neither -l or -o are provided, we treat it as if we're just
@@ -116,7 +106,7 @@ def main():
     save = args.save
 
     if not show and not save:
-        show = True # ...because otherwise what's the point of invoking this?
+        save = True # ...because otherwise what's the point of invoking this?
 
     exp_files = []
     for rx in args.dirs:
@@ -124,25 +114,49 @@ def main():
             exp_files.append(result)
 
     workloads = {}
+    
     for file in exp_files:
         with open(file, "r") as infile:
             experiment = yaml.full_load(infile)
-            workloads[file] = {
-                "ts": experiment["ts"],
-                "flags": experiment["flags"]
-            }
+            workloads[file] = experiment
 
-    if throughput:
-        plot_ts_stat(workloads, "throughput", save)
+    for fname, workload in workloads.items():
+        if throughput:
+            img_name = fname.replace("/", "-")[:-5] + "-throughput.png" # ignore the ".yaml" at the end
 
-    if latency:
-        plot_ts_stat(workloads, "latency", save)
+            fig = plot_ts_stat(workload, "throughput")    
+            plt.tight_layout()
+            plt.title(args.title)
 
-    if outstanding:
-        plot_ts_stat(workloads, "outstanding", save)
+            if save:
+                fig.savefig(img_name)
+                print(f"graph saved as {img_name}")
 
-    if show:
-        plt.show()
+        if latency:
+            img_name = fname.replace("/", "-")[:-5] + "-latency.png"
+
+            fig = plot_ts_stat(workload, "latency")    
+            plt.tight_layout()
+            plt.title(args.title)
+
+            if save:
+                fig.savefig(img_name)
+                print(f"graph saved as {img_name}")
+
+
+        if outstanding:
+            img_name = fname.replace("/", "-")[:-5] + "-outstanding.png"
+
+            fig = plot_ts_stat(workload, "outstanding")    
+            plt.tight_layout()
+            plt.title(args.title)
+
+            if save:
+                fig.savefig(img_name)
+                print(f"graph saved as {img_name}")
+
+        if show:
+            plt.show()
 
 
 if __name__ == "__main__":

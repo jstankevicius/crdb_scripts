@@ -191,7 +191,7 @@ def main():
         plt.tight_layout()
 
         if args.save:
-            imgname = f"{TIMESTR}_throughput.png"
+            imgname = f"{TIMESTR}_throughput.pdf"
             fig.savefig(imgname)
             print(f"graph saved as {imgname}")
     
@@ -201,7 +201,7 @@ def main():
         plt.tight_layout()
 
         if args.save:
-            imgname = f"{TIMESTR}_latency.png"
+            imgname = f"{TIMESTR}_latency.pdf"
             fig.savefig(imgname)
             print(f"graph saved as {imgname}")
 
@@ -211,7 +211,7 @@ def main():
         plt.tight_layout()
 
         if args.save:
-            imgname = f"{TIMESTR}_outstanding.png"
+            imgname = f"{TIMESTR}_outstanding.pdf"
             fig.savefig(imgname)
             print(f"graph saved as {imgname}")
 

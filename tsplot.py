@@ -122,7 +122,7 @@ def main():
 
     for fname, workload in workloads.items():
         if throughput:
-            img_name = fname.replace("/", "-")[:-5] + "-throughput.png" # ignore the ".yaml" at the end
+            img_name = fname.replace("/", "-")[:-5] + "-throughput.pdf" # ignore the ".yaml" at the end
 
             fig = plot_ts_stat(workload, "throughput")    
             plt.tight_layout()
@@ -133,7 +133,7 @@ def main():
                 print(f"graph saved as {img_name}")
 
         if latency:
-            img_name = fname.replace("/", "-")[:-5] + "-latency.png"
+            img_name = fname.replace("/", "-")[:-5] + "-latency.pdf"
 
             fig = plot_ts_stat(workload, "latency")    
             plt.tight_layout()
@@ -145,7 +145,7 @@ def main():
 
 
         if outstanding:
-            img_name = fname.replace("/", "-")[:-5] + "-outstanding.png"
+            img_name = fname.replace("/", "-")[:-5] + "-outstanding.pdf"
 
             fig = plot_ts_stat(workload, "outstanding")    
             plt.tight_layout()

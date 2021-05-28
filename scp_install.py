@@ -1,5 +1,5 @@
 import os
-N_NODES = 4
+N_NODES = 24
 ROACHDIR = "~/go/src/github.com/cockroachdb/cockroach"
 
 def main():

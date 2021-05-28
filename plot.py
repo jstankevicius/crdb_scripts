@@ -31,14 +31,14 @@ DEFAULT_PERCENTILES = {
 }
 
 STAT_LABELS = {
-    "throughput": "throughput (requests/sec)",
+    "throughput": "throughput (Kreq/s)",
     "latency": "latency (ms)",
     "outstanding": "# outstanding requests"
 }
 
 DOMAIN_LABELS = {
-    "max-rate": "target offered load (requests/sec)",
-    "concurrency": "# client threads"
+    "max-rate": "target offered load \n (Kreq/s)",
+    "concurrency": "# K client threads"
 }
 
 plt.rcParams["axes.prop_cycle"] = cycler(color=[
@@ -56,15 +56,17 @@ def get_flags_and_aggregate(file):
         return (y["flags"], y["aggregate"])
 
 def plot_exp_aggregate_stats(experiments, domain_stat, aggregate_stat, percentiles):
-    fig = plt.figure(figsize=(4, 4))
+    fig = plt.figure(figsize=(2.5, 2.5))
 
     axes = plt.axes()
+    #axes.set_ylim([0, 63])
     lines = {}
 
     for exp_name, exp_data in experiments.items():
 
         # Grab x-axis for experiment
         rates = exp_data.keys()
+        rates = [i/1000 for i in rates]
         
         for rate, aggregate in exp_data.items():
             for percentile in percentiles:
@@ -82,14 +84,15 @@ def plot_exp_aggregate_stats(experiments, domain_stat, aggregate_stat, percentil
     style_idx = 0
     for line_name, line_data in lines.items():
         line_x, line_y = line_data
-        line, = axes.plot(line_x, line_y, marker=STYLES[style_idx])
+        #line_y = [l/1000 for l in line_y]
+        line, = axes.plot(line_x, line_y, marker=STYLES[style_idx], ms=6)
         line.set_label(line_name)
         style_idx += 1
 
         if style_idx == len(STYLES):
             style_idx = 0
 
-    axes.legend(loc="upper right", fontsize="small")
+    axes.legend(loc="lower right", fontsize="x-small")
     axes.set(xlabel=DOMAIN_LABELS[domain_stat], ylabel=STAT_LABELS[aggregate_stat])
     axes.grid()
 
@@ -176,7 +179,6 @@ def main():
         data.sort(key=lambda f: f[0][args.x])
         x = [f[0][args.x] for f in data]
         y = [f[1] for f in data]
-
         experiments[directory] = {x[i]: y[i] for i in range(len(x))}
 
         # Now experiments looks like
@@ -196,7 +198,7 @@ def main():
             print(f"graph saved as {imgname}")
     
     if graph_latency:
-        fig = plot_exp_aggregate_stats(experiments, args.title, args.x, "latency", latency_percentiles)
+        fig = plot_exp_aggregate_stats(experiments, args.x, "latency", latency_percentiles)
         plt.title(args.title, wrap=True)
         plt.tight_layout()
 
@@ -206,7 +208,7 @@ def main():
             print(f"graph saved as {imgname}")
 
     if graph_outstanding:
-        fig = plot_exp_aggregate_stats(experiments, args.title, args.x, "outstanding", outstanding_percentiles)
+        fig = plot_exp_aggregate_stats(experiments, args.x, "outstanding", outstanding_percentiles)
         plt.title(args.title, wrap=True)
         plt.tight_layout()
 

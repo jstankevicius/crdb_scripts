@@ -10,6 +10,9 @@ from pqueue import PriorityQueue
 from processing import process_timeseries
 from tqdm import tqdm
 
+def ssh_cmd(node_name, cmd):
+    os.system(f"sudo ssh -tt {node_name} '{cmd}' &")
+
 def run():
 
     # Get everything we need from config.yaml:
@@ -22,6 +25,7 @@ def run():
     configs = conf["configs"]
     sql_stmts = conf["sql-statements"]
     session_vars = conf["session-vars"]
+    workload_nodes = conf["workload-nodes"]
 
     # Figure out connection strings. These stay the same during all workloads.
     # We assume all nodes are listening on port 26257.
@@ -69,12 +73,18 @@ def run():
 
         cmd += " ".join(conn_strings)
 
+        # Initialize workload
+        os.system("cockroach workload init kv " + " ".join(init_strings))
+
         # Run workload:
         print("running experiment w/ flags:")
         print(", ".join([f"{f}={v}" for f, v in flags.items()]))
-        os.system("cockroach workload init kv " + " ".join(init_strings))
-        os.system(cmd)
-        
+
+        # First run it on all the other workload nodes that aren't this one:
+        for node in workload_nodes:
+            ssh_cmd(node, cmd)
+        # then run it on this one:
+        # os.system(cmd)
         # "duration" is actually a string, like "30s"
         duration = flags["duration"] 
 
@@ -85,34 +95,48 @@ def run():
         elif time_unit == "m":
             duration = int(duration[:-1])*60
 
+        print("sleeping")
+        time.sleep(duration + 30)
+        print("finished sleeping")
         # map of request ids to request start and finish times
-        requests = {}
+        timestamps = []
         
         # for computing unfinished request #
         unfinished = 0
+        for node in workload_nodes:
+            print(f"grabbing trace files from {node}")
+            os.system(f"sudo scp {node}:start.txt .")
+            os.system(f"sudo scp {node}:end.txt .")
+            os.system(f"sudo ssh -t {node} 'rm start.txt end.txt'")
 
-        with open("start.txt") as started_file:
-            for line in started_file:
-                req_id, ts = [int(s) for s in line.split()]
-                requests[req_id] = [ts, np.Inf]
-                unfinished += 1
+            requests = {}
+
+            with open("start.txt") as started_file:
+                for line in started_file:
+                    req_id, ts = [int(s) for s in line.split()]
+                    requests[req_id] = [ts, np.Inf]
+                    unfinished += 1
+            
+            with open("end.txt") as finished_file:
+                for line in finished_file:  
+                    req_id, ts = [int(s) for s in line.split()]
+                    requests[req_id][1] = ts
+                    unfinished -= 1
+
+            print(f"{unfinished} requests never finished.")
+
+            # IDs are ALMOST sorted by time. Unfortunately, concurrency is cruel
+            # and sometimes a goroutine ends up determining its ID, pausing, and
+            # only taking the timestamp later, after another goroutine. So we 
+            # have to sort.
+            requests = list(requests.values())
+
+            for r in requests:
+                timestamps.append(r)
+            
+            os.system("sudo rm start.txt end.txt")
         
-        with open("end.txt") as finished_file:
-            for line in finished_file:  
-                req_id, ts = [int(s) for s in line.split()]
-                requests[req_id][1] = ts
-                unfinished -= 1
-
-        print(f"{unfinished} requests never finished.")
-
-        # IDs are ALMOST sorted by time. Unfortunately, concurrency is cruel
-        # and sometimes a goroutine ends up determining its ID, pausing, and
-        # only taking the timestamp later, after another goroutine. So we 
-        # have to sort.
-        requests = list(requests.values())
-        requests.sort(key=lambda x: x[0])            
-
-        os.system("rm start.txt end.txt")
+        timestamps.sort(key=lambda x: x[0])
 
         # The "naming convention" (if you can call it that) is pretty dumb 
         # here. We just name the trace after the workload-specific flags 
@@ -120,7 +144,7 @@ def run():
         exp_name = "_".join([flag + str(value) for flag, value in workload_config.items()])
         
         # Process the trace into a YAML file:
-        timeseries, aggregate_data = process_timeseries(np.array(requests), duration)
+        timeseries, aggregate_data = process_timeseries(np.array(timestamps), duration)
         print(exp_name + ":")
         pprint(aggregate_data)
 
@@ -142,14 +166,6 @@ def run():
 
             trace.writelines(lines)
         
-        # retrieve logs
-        for node in cluster.get_nodes():
-            node_name = node.get_name()
-            logdir = f"{name}/logs/{exp_name}/{node_name}"
-            print(f"\ndownloading logs from {node_name}")
-            os.system(f"mkdir -p {logdir}")
-            os.system(f"sudo scp -r {node_name}:/mnt/sda4/node/logs {logdir}")
-
         cluster.kill()
         time.sleep(2)
 
